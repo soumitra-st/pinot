@@ -154,6 +154,7 @@ public class CommonConstants {
       public static final String ADMIN_HTTPS_PORT_KEY = "adminHttpsPort";
       public static final String GRPC_PORT_KEY = "grpcPort";
       public static final String NETTY_TLS_PORT_KEY = "nettyTlsPort";
+      public static final String CLOUD_AZ_KEY = "CLOUD_AZ";
 
       public static final String MULTI_STAGE_QUERY_ENGINE_SERVICE_PORT_KEY = "queryServerPort";
       public static final String MULTI_STAGE_QUERY_ENGINE_MAILBOX_PORT_KEY = "queryMailboxPort";

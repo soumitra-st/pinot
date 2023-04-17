@@ -29,8 +29,12 @@ import io.swagger.annotations.ApiResponses;
 import io.swagger.annotations.Authorization;
 import io.swagger.annotations.SecurityDefinition;
 import io.swagger.annotations.SwaggerDefinition;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 import javax.inject.Inject;
 import javax.ws.rs.ClientErrorException;
 import javax.ws.rs.Consumes;
@@ -46,8 +50,10 @@ import javax.ws.rs.QueryParam;
 import javax.ws.rs.core.HttpHeaders;
 import javax.ws.rs.core.MediaType;
 import javax.ws.rs.core.Response;
+import org.apache.commons.lang3.StringUtils;
 import org.apache.helix.model.InstanceConfig;
 import org.apache.pinot.common.utils.config.InstanceUtils;
+import org.apache.pinot.common.utils.helix.HelixHelper;
 import org.apache.pinot.controller.api.access.AccessType;
 import org.apache.pinot.controller.api.access.Authenticate;
 import org.apache.pinot.controller.api.exception.ControllerApplicationException;
@@ -388,6 +394,71 @@ public class PinotInstanceRestletResource {
     } catch (Exception e) {
       throw new ControllerApplicationException(LOGGER, "Failed to update broker resource for instance: " + instanceName,
           Response.Status.INTERNAL_SERVER_ERROR, e);
+    }
+  }
+
+  @POST
+  @Path("/instances/updatePoolTag")
+  @Authenticate(AccessType.CREATE)
+  @Consumes(MediaType.APPLICATION_JSON)
+  @Produces(MediaType.APPLICATION_JSON)
+  @ApiOperation(value = "Create pool tag based on CLOUD_AZ tag on the server instances",
+          consumes = MediaType.APPLICATION_JSON,
+          notes = "Create pool tag based on CLOUD_AZ tag on the server instances")
+  @ApiResponses(value = {
+          @ApiResponse(code = 200, message = "Success"),
+          @ApiResponse(code = 500, message = "Internal error")
+  })
+  public SuccessResponse updatePoolTag(
+          @ApiParam(value = "Pool tag name", required = true) @QueryParam("pool") String tag) {
+    LOGGER.info("Update pool tag request received for tag: {}", tag);
+    if (tag == null) {
+      throw new ControllerApplicationException(LOGGER, "Must provide pool to update", Response.Status.BAD_REQUEST);
+    }
+    try {
+      // Get the list of CLOUD_AZ tag in helix for all servers
+      List<InstanceConfig> instances = _pinotHelixResourceManager.getAllHelixInstanceConfigs();
+      Set<String> zones = instances.stream()
+              .filter(instanceConfig ->
+                      instanceConfig.getInstanceName().startsWith(CommonConstants.Helix.PREFIX_OF_SERVER_INSTANCE))
+              .flatMap(instanceConfig -> {
+                var map = instanceConfig.getRecord().getSimpleFields();
+                var cloudAz = map.get(CommonConstants.Helix.Instance.CLOUD_AZ_KEY);
+                return StringUtils.isNotEmpty(cloudAz) ? Stream.of(cloudAz) : Stream.empty();
+              })
+              .collect(Collectors.toSet());
+      Map<String, Integer> zoneToPool = new HashMap<>();
+      int pool = 0;
+      for (String zone : zones) {
+        zoneToPool.put(zone, pool++);
+      }
+
+      instances.stream()
+              .filter(instanceConfig ->
+                      instanceConfig.getInstanceName().startsWith(CommonConstants.Helix.PREFIX_OF_SERVER_INSTANCE))
+              .forEach(instanceConfig -> {
+                var znRecord = instanceConfig.getRecord();
+                var cloudAz = znRecord.getSimpleFields().get(CommonConstants.Helix.Instance.CLOUD_AZ_KEY);
+                if (StringUtils.isNotEmpty(cloudAz) && zoneToPool.containsKey(cloudAz)) {
+                  var poolMap = znRecord.getMapField(InstanceUtils.POOL_KEY);
+                  if (poolMap == null) {
+                    poolMap = new HashMap<>();
+                  }
+                  LOGGER.info("Updating pool tag for server {} to {}:{}", instanceConfig.getInstanceName(),
+                          tag, zoneToPool.get(cloudAz));
+                  poolMap.put(tag, String.valueOf(zoneToPool.get(cloudAz)));
+                  znRecord.setMapField(InstanceUtils.POOL_KEY, poolMap);
+                  HelixHelper.updateInstanceConfig(_pinotHelixResourceManager.getHelixZkManager(), instanceConfig);
+                }
+              });
+
+      return new SuccessResponse("Successfully updated pool tag: " + tag);
+    } catch (ClientErrorException e) {
+      throw new ControllerApplicationException(LOGGER, e.getMessage(), e.getResponse().getStatus());
+    } catch (Exception e) {
+      throw new ControllerApplicationException(LOGGER,
+              String.format("Failed to update pool tag: %s", tag),
+              Response.Status.INTERNAL_SERVER_ERROR, e);
     }
   }
 }

@@ -389,6 +389,13 @@ public abstract class BaseServerStarter implements ServiceStartable {
           serverConf.getMultiStageMailboxPort());
     }
 
+    final String cloudAz = System.getenv(Instance.CLOUD_AZ_KEY);
+    if (StringUtils.isNotBlank(cloudAz)) {
+      LOGGER.info("Adding '{}' tag for instance: {} to: {}", Instance.CLOUD_AZ_KEY, _instanceId, cloudAz);
+      simpleFields.put(Instance.CLOUD_AZ_KEY, cloudAz);
+      updated = true;
+    }
+
     // Update environment properties
     if (_pinotEnvironmentProvider != null) {
       // Retrieve failure domain information and add to the environment properties map
