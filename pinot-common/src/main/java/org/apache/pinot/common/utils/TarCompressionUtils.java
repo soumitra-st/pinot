@@ -24,14 +24,19 @@ import java.io.BufferedInputStream;
 import java.io.BufferedOutputStream;
 import java.io.File;
 import java.io.FileDescriptor;
+import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.nio.channels.Channels;
+import java.nio.channels.FileChannel;
 import java.nio.file.Files;
+import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.zip.GZIPInputStream;
 import org.apache.commons.compress.archivers.ArchiveEntry;
 import org.apache.commons.compress.archivers.ArchiveInputStream;
 import org.apache.commons.compress.archivers.ArchiveOutputStream;
@@ -188,6 +193,76 @@ public class TarCompressionUtils {
   public static List<File> untar(InputStream inputStream, File outputDir)
       throws IOException {
     return untarWithRateLimiter(inputStream, outputDir, NO_DISK_WRITE_RATE_LIMIT);
+  }
+
+  // https://chatgpt.com/share/677ea955-96b8-800d-a4f0-85993d124219
+  public static List<File> zeroCopyUntar(File inputFile, File outputDir)
+      throws IOException {
+    List<File> untarredFiles = new ArrayList<>();
+    try (FileInputStream fis = new FileInputStream(inputFile); GZIPInputStream gis = new GZIPInputStream(fis);
+        TarArchiveInputStream tis = new TarArchiveInputStream(gis)) {
+      TarArchiveEntry entry;
+      while ((entry = tis.getNextEntry()) != null) {
+        if (entry.isDirectory()) {
+          // Create directory if needed
+          new File(outputDir, entry.getName()).mkdirs();
+        } else {
+          // Zero-copy file extraction
+          File outputFile = new File(outputDir, entry.getName());
+          outputFile.getParentFile().mkdirs(); // Ensure parent directories exist
+          try (FileChannel outChannel = FileChannel.open(outputFile.toPath(), StandardOpenOption.CREATE,
+              StandardOpenOption.WRITE);) {
+            long bytesTransferred = 0;
+            long fileSize = entry.getSize();
+            while (bytesTransferred < fileSize) {
+              long bytes =
+                  outChannel.transferFrom(Channels.newChannel(tis), bytesTransferred, fileSize - bytesTransferred);
+              if (bytes == 0) {
+                break; // No more data
+              }
+              bytesTransferred += bytes;
+            }
+          }
+          untarredFiles.add(outputFile);
+        }
+      }
+    }
+
+    return untarredFiles;
+  }
+
+  public static void main(String[] args) {
+    String tarFileName = "/Users/soumitra/razorpay/output1.tgz";
+    String outputDirName1 = "/Users/soumitra/razorpay/tmp1";
+    String outputDirName2 = "/Users/soumitra/razorpay/tmp2";
+    File inputFile = new File(tarFileName);
+    File outputFile1 = new File(outputDirName1);
+    File outputFile2 = new File(outputDirName2);
+    try {
+      long startTime2 = System.nanoTime();
+      List<File> files2 = zeroCopyUntar(inputFile, outputFile2);
+      long endTime2 = System.nanoTime();
+      System.out.println("zeroCopyUntar: Time taken: " + (endTime2 - startTime2) / 1_000_000 + " ms");
+
+      long startTime1 = System.nanoTime();
+      List<File> files1 = untar(inputFile, outputFile1);
+      long endTime1 = System.nanoTime();
+      System.out.println("untar: Time taken: " + (endTime1 - startTime1) / 1_000_000 + " ms");
+
+      // Print the untarred files for verification
+      System.out.println("Untarred files: ");
+      for (File file : files1) {
+        System.out.println(file);
+      }
+      System.out.println("Zero copy untarred files: ");
+      for (File file : files2) {
+        System.out.println(file);
+      }
+    } catch (IOException e) {
+      System.err.println("Failed to create compressed tar file from: " + inputFile + " to: " + outputFile1);
+      e.printStackTrace();
+      System.exit(1);
+    }
   }
 
   /**
